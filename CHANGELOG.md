@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## Unreleased
+
+* Support CIDR ranges in `NO_PROXY`, matching by IP network membership for both IPv4 and IPv6, so that entries such as `NO_PROXY=192.168.0.0/16,10.0.0.0/8` bypass the proxy for every address in the range.
+
 ## 0.28.1 (6th December, 2024)
 
 * Fix SSL case where `verify=False` together with client side certificates.

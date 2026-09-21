@@ -157,6 +157,22 @@ class URLPattern:
     True
     >>> pattern.matches(httpx.URL("https://example.com"))
     False
+
+    # With IP range matching...
+    >>> pattern = URLPattern("all://192.168.0.0/16")
+    >>> pattern.matches(httpx.URL("http://192.168.0.5"))
+    True
+    >>> pattern.matches(httpx.URL("http://192.168.0.5:8080"))
+    True
+    >>> pattern.matches(httpx.URL("http://10.0.0.7"))
+    False
+
+    # IPv6 ranges are also supported...
+    >>> pattern = URLPattern("all://[2001:db8::/32]")
+    >>> pattern.matches(httpx.URL("http://[2001:db8::1]"))
+    True
+    >>> pattern.matches(httpx.URL("http://[2001:db9::1]"))
+    False
     """
 
     def __init__(self, pattern: str) -> None:
@@ -169,13 +185,25 @@ class URLPattern:
                 f'Instead of "{pattern}", use "{pattern}://"'
             )
 
-        url = URL(pattern)
         self.pattern = pattern
+        self.network = parse_network_pattern(pattern)
+        if self.network is not None:
+            # An IP range such as "all://192.168.0.0/16" or "all://[2001:db8::/32]".
+            # These don't parse as regular URLs, and are matched by network
+            # membership rather than by hostname comparison.
+            scheme, _, host = pattern.partition("://")
+            self.scheme = "" if scheme == "all" else scheme
+            self.host = host
+            self.port = None
+            self.host_regex: typing.Pattern[str] | None = None
+            return
+
+        url = URL(pattern)
         self.scheme = "" if url.scheme == "all" else url.scheme
         self.host = "" if url.host == "*" else url.host
         self.port = url.port
         if not url.host or url.host == "*":
-            self.host_regex: typing.Pattern[str] | None = None
+            self.host_regex = None
         elif url.host.startswith("*."):
             # *.example.com should match "www.example.com", but not "example.com"
             domain = re.escape(url.host[2:])
@@ -192,7 +220,16 @@ class URLPattern:
     def matches(self, other: URL) -> bool:
         if self.scheme and self.scheme != other.scheme:
             return False
-        if (
+        if self.network is not None:
+            try:
+                address = ipaddress.ip_address(other.host)
+            except ValueError:
+                return False
+            if address.version != self.network.version:
+                return False
+            if address not in self.network:
+                return False
+        elif (
             self.host
             and self.host_regex is not None
             and not self.host_regex.match(other.host)
@@ -203,18 +240,28 @@ class URLPattern:
         return True
 
     @property
-    def priority(self) -> tuple[int, int, int]:
+    def priority(self) -> tuple[int, int, int, int]:
         """
         The priority allows URLPattern instances to be sortable, so that
         we can match from most specific to least specific.
         """
         # URLs with a port should take priority over URLs without a port.
         port_priority = 0 if self.port is not None else 1
+        # IP addresses and IP ranges are ordered by how specific they are,
+        # so that "10.0.0.0/8" takes priority over "0.0.0.0/0", and an exact
+        # address takes priority over any range that contains it.
+        if self.network is not None:
+            network_priority = -self.network.prefixlen
+        else:
+            try:
+                network_priority = -ipaddress.ip_address(self.host).max_prefixlen
+            except ValueError:
+                network_priority = 0
         # Longer hostnames should match first.
         host_priority = -len(self.host)
         # Longer schemes should match first.
         scheme_priority = -len(self.scheme)
-        return (port_priority, host_priority, scheme_priority)
+        return (port_priority, network_priority, host_priority, scheme_priority)
 
     def __hash__(self) -> int:
         return hash(self.pattern)
@@ -224,6 +271,27 @@ class URLPattern:
 
     def __eq__(self, other: typing.Any) -> bool:
         return isinstance(other, URLPattern) and self.pattern == other.pattern
+
+
+def parse_network_pattern(
+    pattern: str,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    """
+    Given a proxy pattern such as "all://192.168.0.0/16" or
+    "all://[2001:db8::/32]", return the IP range it describes,
+    or `None` if the pattern is not an IP range.
+    """
+    _, _, remainder = pattern.partition("://")
+    if remainder.startswith("[") and remainder.endswith("]"):
+        candidate = remainder[1:-1]
+    else:
+        candidate = remainder
+    if "/" not in candidate:
+        return None
+    try:
+        return ipaddress.ip_network(candidate, strict=False)
+    except ValueError:
+        return None
 
 
 def is_ipv4_hostname(hostname: str) -> bool:

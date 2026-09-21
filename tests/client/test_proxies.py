@@ -153,6 +153,29 @@ def test_unsupported_proxy_scheme():
             {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "127.0.0.1"},
             None,
         ),
+        # Not proxied if NO_PROXY matches an IP range containing the host.
+        (
+            "http://127.0.0.1",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "127.0.0.0/8"},
+            None,
+        ),
+        (
+            "http://127.0.0.1:8080",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "127.0.0.0/8"},
+            None,
+        ),
+        # Not proxied if NO_PROXY matches an IPv6 range containing the host.
+        (
+            "http://[::1]",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "::1/128"},
+            None,
+        ),
+        # Proxied if the host is outside of any NO_PROXY IP range.
+        (
+            "http://127.0.0.1",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "10.0.0.0/8"},
+            "http://localhost:123",
+        ),
         # Proxied if NO_PROXY scheme does not match URL.
         (
             "http://127.0.0.1",

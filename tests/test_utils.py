@@ -127,6 +127,18 @@ def test_get_environment_proxies(environment, proxies):
         ("http://", "https://example.com", False),
         ("all://", "https://example.com:123", True),
         ("", "https://example.com:123", True),
+        ("all://192.168.0.0/16", "http://192.168.0.5", True),
+        ("all://192.168.0.0/16", "http://192.168.0.5:8080", True),
+        ("all://192.168.0.0/16", "http://192.168.255.255", True),
+        ("all://192.168.0.0/16", "http://192.169.0.1", False),
+        ("all://192.168.0.0/16", "http://example.com", False),
+        ("http://192.168.0.0/16", "https://192.168.0.5", False),
+        ("all://10.0.0.0/8", "http://10.1.2.3", True),
+        ("all://[2001:db8::/32]", "http://[2001:db8::1]", True),
+        ("all://[2001:db8::/32]", "http://[2001:db8::1]:8080", True),
+        ("all://[2001:db8::/32]", "http://[2001:db9::1]", False),
+        ("all://[2001:db8::/32]", "http://192.168.0.5", False),
+        ("all://192.168.0.0/16", "http://[2001:db8::1]", False),
     ],
 )
 def test_url_matches(pattern, url, expected):
@@ -146,5 +158,25 @@ def test_pattern_priority():
         URLPattern("http://example.com:123"),
         URLPattern("http://example.com"),
         URLPattern("http://"),
+        URLPattern("all://"),
+    ]
+
+
+def test_network_pattern_priority():
+    # IP addresses and IP ranges are ordered from most specific
+    # to least specific, regardless of declaration order.
+    matchers = [
+        URLPattern("all://"),
+        URLPattern("all://10.0.0.0/8"),
+        URLPattern("all://10.1.0.0/16"),
+        URLPattern("all://10.1.2.3"),
+        URLPattern("all://10.1.2.0/24"),
+    ]
+    random.shuffle(matchers)
+    assert sorted(matchers) == [
+        URLPattern("all://10.1.2.3"),
+        URLPattern("all://10.1.2.0/24"),
+        URLPattern("all://10.1.0.0/16"),
+        URLPattern("all://10.0.0.0/8"),
         URLPattern("all://"),
     ]
