@@ -99,6 +99,15 @@ def test_logging_redirect_chain(server, caplog):
         ({"TRAVIS_APT_PROXY": "http://127.0.0.1"}, {}),
         ({"no_proxy": "127.0.0.1"}, {"all://127.0.0.1": None}),
         ({"no_proxy": "192.168.0.0/16"}, {"all://192.168.0.0/16": None}),
+        ({"no_proxy": "10.0.0.0/8"}, {"all://10.0.0.0/8": None}),
+        ({"no_proxy": "2001:db8::/32"}, {"all://[2001:db8::]/32": None}),
+        (
+            {"no_proxy": "192.168.0.0/16,2001:db8::/32"},
+            {
+                "all://192.168.0.0/16": None,
+                "all://[2001:db8::]/32": None,
+            },
+        ),
         ({"no_proxy": "::1"}, {"all://[::1]": None}),
         ({"no_proxy": "localhost"}, {"all://localhost": None}),
         ({"no_proxy": "github.com"}, {"all://*github.com": None}),
@@ -127,6 +136,25 @@ def test_get_environment_proxies(environment, proxies):
         ("http://", "https://example.com", False),
         ("all://", "https://example.com:123", True),
         ("", "https://example.com:123", True),
+        # IPv4 networks match any address in range, port is ignored.
+        ("all://192.168.0.0/16", "http://192.168.0.0", True),
+        ("all://192.168.0.0/16", "http://192.168.0.5", True),
+        ("all://192.168.0.0/16", "http://192.168.255.254", True),
+        ("all://192.168.0.0/16", "http://192.168.0.5:8080", True),
+        ("all://192.168.0.0/16", "http://192.169.0.5", False),
+        ("all://10.0.0.0/8", "http://10.1.2.3", True),
+        ("all://10.0.0.0/8", "http://192.168.0.5", False),
+        # Networks don't match hostnames or the wrong scheme.
+        ("all://192.168.0.0/16", "http://example.com", False),
+        ("https://10.0.0.0/8", "http://10.1.2.3", False),
+        ("https://10.0.0.0/8", "https://10.1.2.3", True),
+        # IPv6 networks match any address in range, port is ignored.
+        ("all://[2001:db8::]/32", "http://[2001:db8::1]", True),
+        ("all://[2001:db8::]/32", "http://[2001:db8:abcd::1]:8080", True),
+        ("all://[2001:db8::]/32", "http://[2001:db9::1]", False),
+        ("all://[fe80::]/10", "http://[fe80::1]", True),
+        # Non-strict network parsing tolerates host bits being set.
+        ("all://192.168.1.5/24", "http://192.168.1.9", True),
     ],
 )
 def test_url_matches(pattern, url, expected):
@@ -146,5 +174,26 @@ def test_pattern_priority():
         URLPattern("http://example.com:123"),
         URLPattern("http://example.com"),
         URLPattern("http://"),
+        URLPattern("all://"),
+    ]
+
+
+def test_pattern_priority_networks():
+    # Exact hosts beat IP networks, longer prefixes beat shorter ones,
+    # and networks beat wildcard domains. Ordering must be deterministic
+    # regardless of insertion order.
+    matchers = [
+        URLPattern("all://"),
+        URLPattern("all://*example.com"),
+        URLPattern("all://10.0.0.0/8"),
+        URLPattern("all://10.0.1.0/16"),
+        URLPattern("all://10.0.1.5"),
+    ]
+    random.shuffle(matchers)
+    assert sorted(matchers) == [
+        URLPattern("all://10.0.1.5"),
+        URLPattern("all://10.0.1.0/16"),
+        URLPattern("all://10.0.0.0/8"),
+        URLPattern("all://*example.com"),
         URLPattern("all://"),
     ]

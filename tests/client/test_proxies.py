@@ -220,6 +220,40 @@ def test_unsupported_proxy_scheme():
             {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "*"},
             None,
         ),
+        # Any address in an IPv4 CIDR range in NO_PROXY bypasses the proxy.
+        (
+            "http://192.168.0.5",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "192.168.0.0/16"},
+            None,
+        ),
+        (
+            "http://10.0.0.7",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "192.168.0.0/16,10.0.0.0/8"},
+            None,
+        ),
+        # Addresses outside the CIDR range are still proxied.
+        (
+            "http://172.16.0.1",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "192.168.0.0/16"},
+            "http://localhost:123",
+        ),
+        # Ports don't affect CIDR matches.
+        (
+            "http://192.168.1.1:8080",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "192.168.0.0/16"},
+            None,
+        ),
+        # Any address in an IPv6 CIDR range in NO_PROXY bypasses the proxy.
+        (
+            "http://[2001:db8::7]",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "2001:db8::/32"},
+            None,
+        ),
+        (
+            "http://[2001:db9::1]",
+            {"ALL_PROXY": "http://localhost:123", "NO_PROXY": "2001:db8::/32"},
+            "http://localhost:123",
+        ),
     ],
 )
 @pytest.mark.parametrize("client_class", [httpx.Client, httpx.AsyncClient])

@@ -60,10 +60,19 @@ def get_environment_proxies() -> dict[str, str | None]:
             # NO_PROXY=google.com is marked as "all://*google.com,
             #   which disables "www.google.com" and "google.com".
             #   (But not "wwwgoogle.com")
-            # NO_PROXY can include domains, IPv6, IPv4 addresses and "localhost"
-            #   NO_PROXY=example.com,::1,localhost,192.168.0.0/16
+            # NO_PROXY can include domains, IPv6, IPv4 addresses,
+            # IPv4/IPv6 CIDR ranges and "localhost".
+            #   NO_PROXY=example.com,::1,localhost,192.168.0.0/16,2001:db8::/32
             if "://" in hostname:
                 mounts[hostname] = None
+            elif is_ip_network(hostname):
+                # CIDR ranges are treated as IP networks, so any address
+                # inside the range bypasses the proxy, matching curl.
+                if is_ipv6_hostname(hostname.split("/")[0]):
+                    address, prefix = hostname.split("/")
+                    mounts[f"all://[{address}]/{prefix}"] = None
+                else:
+                    mounts[f"all://{hostname}"] = None
             elif is_ipv4_hostname(hostname):
                 mounts[f"all://{hostname}"] = None
             elif is_ipv6_hostname(hostname):
@@ -169,29 +178,55 @@ class URLPattern:
                 f'Instead of "{pattern}", use "{pattern}://"'
             )
 
-        url = URL(pattern)
         self.pattern = pattern
+        network = _pattern_network(pattern)
+        if network is not None:
+            # An IP network, such as "all://192.168.0.0/16" or
+            # "all://[2001:db8::]/32", matches any address in the range.
+            url = URL(_pattern_without_network(pattern))
+            self.scheme = "" if url.scheme == "all" else url.scheme
+            self.host = str(network.network_address)
+            self.port = None
+            self.host_regex = None
+            self.host_kind = 1
+            self.network: (
+                ipaddress.IPv4Network | ipaddress.IPv6Network | None
+            ) = network
+            return
+
+        self.network = None
+        url = URL(pattern)
         self.scheme = "" if url.scheme == "all" else url.scheme
         self.host = "" if url.host == "*" else url.host
         self.port = url.port
         if not url.host or url.host == "*":
             self.host_regex: typing.Pattern[str] | None = None
+            self.host_kind = 3
         elif url.host.startswith("*."):
             # *.example.com should match "www.example.com", but not "example.com"
             domain = re.escape(url.host[2:])
             self.host_regex = re.compile(f"^.+\\.{domain}$")
+            self.host_kind = 2
         elif url.host.startswith("*"):
             # *example.com should match "www.example.com" and "example.com"
             domain = re.escape(url.host[1:])
             self.host_regex = re.compile(f"^(.+\\.)?{domain}$")
+            self.host_kind = 2
         else:
             # example.com should match "example.com" but not "www.example.com"
             domain = re.escape(url.host)
             self.host_regex = re.compile(f"^{domain}$")
+            self.host_kind = 0
 
     def matches(self, other: URL) -> bool:
         if self.scheme and self.scheme != other.scheme:
             return False
+        if self.network is not None:
+            # Ports are intentionally ignored when matching IP networks.
+            try:
+                return ipaddress.ip_address(other.host) in self.network
+            except ValueError:
+                return False
         if (
             self.host
             and self.host_regex is not None
@@ -203,18 +238,29 @@ class URLPattern:
         return True
 
     @property
-    def priority(self) -> tuple[int, int, int]:
+    def priority(self) -> tuple[int, int, int, int, str]:
         """
         The priority allows URLPattern instances to be sortable, so that
         we can match from most specific to least specific.
         """
         # URLs with a port should take priority over URLs without a port.
         port_priority = 0 if self.port is not None else 1
-        # Longer hostnames should match first.
-        host_priority = -len(self.host)
+        # Exact hosts and IP networks take priority over wildcard hosts,
+        # and more specific (longer-prefix) networks match first.
+        if self.network is not None:
+            host_priority = -self.network.prefixlen
+        else:
+            host_priority = -len(self.host)
         # Longer schemes should match first.
         scheme_priority = -len(self.scheme)
-        return (port_priority, host_priority, scheme_priority)
+        # The final tiebreaker keeps ordering independent of insertion order.
+        return (
+            port_priority,
+            self.host_kind,
+            host_priority,
+            scheme_priority,
+            self.pattern,
+        )
 
     def __hash__(self) -> int:
         return hash(self.pattern)
@@ -240,3 +286,40 @@ def is_ipv6_hostname(hostname: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def is_ip_network(hostname: str) -> bool:
+    try:
+        ipaddress.ip_network(hostname, strict=False)
+    except ValueError:
+        return False
+    return "/" in hostname
+
+
+# Matches an IP network in the authority of a proxy key, such as
+# "all://192.168.0.0/16" or "all://[2001:db8::]/32". The CIDR prefix
+# is a trailing "/N" component of the URL.
+_IP_NETWORK_RE = re.compile(
+    r"^(?P<base>[^:]*://(?:\[(?P<ipv6>[^\]]*)\]|(?P<ipv4>[^/:\]]*)))/(?P<prefix>\d+)$"
+)
+
+
+def _pattern_network(
+    pattern: str,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network | None:
+    match = _IP_NETWORK_RE.match(pattern)
+    if match is None:
+        return None
+    address = match.group("ipv6") or match.group("ipv4")
+    try:
+        return ipaddress.ip_network(
+            f"{address}/{match.group('prefix')}", strict=False
+        )
+    except ValueError:
+        return None
+
+
+def _pattern_without_network(pattern: str) -> str:
+    match = _IP_NETWORK_RE.match(pattern)
+    assert match is not None
+    return match.group("base")

@@ -51,3 +51,11 @@ python -c "import httpx; httpx.get('http://example.com')"
 python -c "import httpx; httpx.get('http://127.0.0.1:5000/my-api')"
 python -c "import httpx; httpx.get('https://www.python-httpx.org')"
 ```
+
+`NO_PROXY` also accepts CIDR notation for IPv4 and IPv6 address ranges.
+Any address inside a listed range bypasses the proxy, matching the
+behaviour of `curl`:
+
+```bash
+export NO_PROXY=192.168.0.0/16,10.0.0.0/8,2001:db8::/32
+```
